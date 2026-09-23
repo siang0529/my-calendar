@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>我的個人行程與事項管理 (Google日曆連動版)</title>
+    <style>
+        /* CSS 樣式維持不變 */
+        :root { --primary: #4A90E2; --bg-color: #F4F7F6; --card-bg: #FFFFFF; --text: #333333; --border: #E0E0E0; --danger: #E74C3C; --success: #2ECC71; --google: #4285F4; }
+        * { box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background-color: var(--bg-color); color: var(--text); margin: 0; padding: 20px; }
+        h1 { text-align: center; color: var(--primary); }
+        .container { display: flex; gap: 20px; max-width: 1200px; margin: 0 auto; flex-wrap: wrap; }
+        .card { background: var(--card-bg); padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); flex: 1; min-width: 300px; }
+        h2 { border-bottom: 2px solid var(--primary); padding-bottom: 10px; margin-top: 0; font-size: 1.2rem; display: flex; justify-content: space-between; align-items: center;}
+        
+        /* 授權按鈕 */
+        #auth-btn { background: var(--google); color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; font-size: 0.9rem; font-weight: bold;}
+        #auth-btn:disabled { background: #ccc; cursor: not-allowed; }
+
+        .calendar-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .calendar-header button { cursor: pointer; background: var(--primary); color: white; border: none; padding: 5px 10px; border-radius: 5px; }
+        .days-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; text-align: center; }
+        .day-name { font-weight: bold; color: #777; }
+        .day { padding: 10px; background: #f9f9f9; border-radius: 5px; cursor: pointer; border: 1px solid transparent; position: relative;}
+        .day:hover { background: #e9e9e9; }
+        .day.selected { border-color: var(--primary); background: #e3f2fd; font-weight: bold;}
+        .day.has-task::after { content: ''; position: absolute; bottom: 3px; left: 50%; transform: translateX(-50%); width: 6px; height: 6px; background: var(--danger); border-radius: 50%; }
+        .day.has-google::before { content: ''; position: absolute; top: 3px; right: 3px; width: 6px; height: 6px; background: var(--google); border-radius: 50%; }
+
+        .task-input-group { display: flex; gap: 10px; margin-bottom: 15px; }
+        input[type="text"], input[type="time"] { padding: 8px; border: 1px solid var(--border); border-radius: 5px; flex: 1; }
+        button.add-btn { background: var(--success); color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; }
+        .task-list { list-style: none; padding: 0; margin: 0; }
+        .task-item { display: flex; align-items: center; justify-content: space-between; padding: 10px; border-bottom: 1px solid var(--border); }
+        .task-item.completed .task-text { text-decoration: line-through; color: #999; }
+        .task-content { display: flex; align-items: center; gap: 10px; }
+        .reminder-badge { font-size: 0.8rem; background: #fff3cd; color: #856404; padding: 2px 6px; border-radius: 10px; }
+        .google-badge { font-size: 0.8rem; background: #e8f0fe; color: var(--google); padding: 2px 6px; border-radius: 10px; }
+        .delete-btn { background: var(--danger); color: white; border: none; padding: 5px 10px; border-radius: 5px; cursor: pointer; font-size: 0.8rem; }
+    </style>
+    
+    <!-- 引入 Google API 庫 -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script src="https://apis.google.com/js/api.js" async defer onload="gapiLoaded()"></script>
+</head>
+<body>
+
+    <h1>📅 個人行程與事項管理</h1>
+
+    <div class="container">
+        <!-- 左側：日曆與短期事項 -->
+        <div class="card">
+            <h2>
+                行事曆 
+                <button id="auth-btn" onclick="handleAuthClick()">連動 Google 日曆</button>
+            </h2>
+            <div class="calendar-header">
+                <button onclick="changeMonth(-1)">&#9664; 上個月</button>
+                <span id="month-year-display" style="font-weight: bold;"></span>
+                <button onclick="changeMonth(1)">下個月 &#9654;</button>
+            </div>
+            <div class="days-grid" id="calendar-grid"></div>
+
+            <h2 style="margin-top: 30px;">📌 短期事項 <span id="selected-date-display" style="font-size: 0.9rem; color: #666;"></span></h2>
+            <div class="task-input-group">
+                <input type="text" id="short-task-input" placeholder="新增今日事項...">
+                <input type="time" id="short-task-time" title="設定時間">
+                <button class="add-btn" onclick="addTask('short')">新增</button>
+            </div>
+            <ul class="task-list" id="short-task-list"></ul>
+        </div>
+
+        <!-- 右側：長期事項 -->
+        <div class="card">
+            <h2>🎯 長期事項 (無特定日期)</h2>
+            <div class="task-input-group">
+                <input type="text" id="long-task-input" placeholder="新增長期目標或待辦事項...">
+                <button class="add-btn" onclick="addTask('long')">新增</button>
+            </div>
+            <ul class="task-list" id="long-task-list"></ul>
+        </div>
+    </div>
+
+    <script>
+        // ==========================================
+        // 🚨 請在這裡填入您的 Client ID 🚨
+        // ==========================================
+        const CLIENT_ID = '289982740072-5n5hn7e4d7mma6g5sgdii1mkustcenqd.apps.googleusercontent.com'; 
+        
+        const DISCOVERY_DOC = 'https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest';
+        const SCOPES = 'https://www.googleapis.com/auth/calendar.events';
+        
+        let tokenClient;
+        let isAuthorized = false;
+
+        let tasks = JSON.parse(localStorage.getItem('myTasks')) || [];
+        let googleEvents = []; // 存放從 Google 抓下來的行程
+        let currentDate = new Date();
+        let selectedDate = new Date();
+
+        // --- Google API 登入初始化 ---
+        function gapiLoaded() {
+            gapi.load('client', initializeGapiClient);
+        }
+
+        async function initializeGapiClient() {
+            await gapi.client.init({ discoveryDocs: [DISCOVERY_DOC] });
+            tokenClient = google.accounts.oauth2.initTokenClient({
+                client_id: CLIENT_ID,
+                scope: SCOPES,
+                callback: async (resp) => {
+                    if (resp.error) throw resp;
+                    isAuthorized = true;
+                    document.getElementById('auth-btn').innerText = '✅ 已連動 Google';
+                    document.getElementById('auth-btn').style.background = 'var(--success)';
+                    await fetchGoogleEvents();
+                },
+            });
+        }
+
+        function handleAuthClick() {
+            if (tokenClient) {
+                // 如果第一次點擊，會跳出 Google 登入與授權視窗
+                tokenClient.requestAccessToken({prompt: 'consent'});
+            }
+        }
+
+        // --- 抓取 Google 日曆資料 ---
+        async function fetchGoogleEvents() {
+            try {
+                // 抓取當月前後30天的行程
+                let timeMin = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1).toISOString();
+                let timeMax = new Date(currentDate.getFullYear(), currentDate.getMonth() + 2, 0).toISOString();
+                
+                const response = await gapi.client.calendar.events.list({
+                    'calendarId': 'primary',
+                    'timeMin': timeMin,
+                    'timeMax': timeMax,
+                    'showDeleted': false,
+                    'singleEvents': true,
+                    'orderBy': 'startTime'
+                });
+                
+                const events = response.result.items;
+                googleEvents = events.map(event => {
+                    // Google全天行程格式是 date, 有時間的是 dateTime
+                    let eventDate = event.start.dateTime ? event.start.dateTime.split('T')[0] : event.start.date;
+                    let eventTime = event.start.dateTime ? event.start.dateTime.split('T')[1].substring(0,5) : '';
+                    return {
+                        id: event.id,
+                        text: event.summary,
+                        type: 'short',
+                        date: eventDate,
+                        reminderTime: eventTime,
+                        completed: false,
+                        isGoogle: true // 標記為Google行程
+                    };
+                });
+                renderTasks();
+                renderCalendar();
+            } catch (err) {
+                console.error("讀取 Google 日曆失敗:", err);
+            }
+        }
+
+        // --- 新增事項到 Google 或 LocalStorage ---
+        async function addTask(type) {
+            const inputId = type === 'short' ? 'short-task-input' : 'long-task-input';
+            const inputEl = document.getElementById(inputId);
+            const text = inputEl.value.trim();
+            if (!text) return alert("請輸入事項內容！");
+
+            let dateStr = formatDate(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate());
+            let timeInput = type === 'short' ? document.getElementById('short-task-time').value : '';
+
+            // 【如果已登入且是短期事項】 -> 直接存到 Google 日曆
+            if (isAuthorized && type === 'short') {
+                const eventBody = { summary: text };
+                if (timeInput) {
+                    // 有設定時間
+                    const startDateTime = new Date(`${dateStr}T${timeInput}:00`);
+                    const endDateTime = new Date(startDateTime.getTime() + 60 * 60 * 1000); // 預設1小時
+                    eventBody.start = { dateTime: startDateTime.toISOString(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone };
+                    eventBody.end = { dateTime: endDateTime.toISOString(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone };
+                } else {
+                    // 全天行程
+                    let nextDay = new Date(selectedDate);
+                    nextDay.setDate(nextDay.getDate() + 1);
+                    eventBody.start = { date: dateStr };
+                    eventBody.end = { date: formatDate(nextDay.getFullYear(), nextDay.getMonth(), nextDay.getDate()) };
+                }
+
+                try {
+                    await gapi.client.calendar.events.insert({ 'calendarId': 'primary', 'resource': eventBody });
+                    inputEl.value = ''; document.getElementById('short-task-time').value = '';
+                    await fetchGoogleEvents(); // 重新抓取更新畫面
+                    return;
+                } catch(e) { console.error("新增到Google失敗", e); alert("新增到 Google 日曆失敗，請檢查連線。"); }
+            }
+
+            // 【如果沒登入 或 是長期事項】 -> 存到 LocalStorage (本機)
+            const newTask = { id: Date.now(), text: text, type: type, completed: false };
+            if (type === 'short') { newTask.date = dateStr; if (timeInput) newTask.reminderTime = timeInput; }
+            tasks.push(newTask);
+            saveData();
+            
+            inputEl.value = '';
+            if(type === 'short') document.getElementById('short-task-time').value = '';
+            renderTasks();
+            renderCalendar();
+        }
+
+        // --- 刪除事項 ---
+        async function deleteTask(id, isGoogle) {
+            if (isGoogle && isAuthorized) {
+                if(confirm("確定要從 Google 日曆刪除此行程嗎？")) {
+                    try {
+                        await gapi.client.calendar.events.delete({ 'calendarId': 'primary', 'eventId': id });
+                        await fetchGoogleEvents(); // 重新抓取
+                    } catch(e) { console.error(e); alert("刪除Google行程失敗"); }
+                }
+            } else {
+                tasks = tasks.filter(t => t.id !== id);
+                saveData();
+                renderTasks();
+                renderCalendar();
+            }
+        }
+
+        // --- 打勾完成事項 ---
+        function toggleTask(id) {
+            const task = tasks.find(t => t.id === id);
+            if (task) { task.completed = !task.completed; saveData(); renderTasks(); renderCalendar(); }
+        }
+
+        function saveData() { localStorage.setItem('myTasks', JSON.stringify(tasks)); }
+
+        // --- 日曆與畫面渲染 ---
+        function renderCalendar() {
+            const grid = document.getElementById('calendar-grid');
+            const display = document.getElementById('month-year-display');
+            grid.innerHTML = '';
+            const year = currentDate.getFullYear();
+            const month = currentDate.getMonth();
+            display.innerText = `${year}年 ${month + 1}月`;
+
+            const days = ['日', '一', '二', '三', '四', '五', '六'];
+            days.forEach(d => { const el = document.createElement('div'); el.className = 'day-name'; el.innerText = d; grid.appendChild(el); });
+
+            const firstDay = new Date(year, month, 1).getDay();
+            const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+            for (let i = 0; i < firstDay; i++) grid.appendChild(document.createElement('div'));
+
+            for (let i = 1; i <= daysInMonth; i++) {
+                const dayEl = document.createElement('div');
+                dayEl.className = 'day'; dayEl.innerText = i;
+                const dateStr = formatDate(year, month, i);
+                
+                if (dateStr === formatDate(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate())) dayEl.classList.add('selected');
+
+                // 紅點：本機未完成事項
+                if (tasks.some(t => t.type === 'short' && t.date === dateStr && !t.completed)) dayEl.classList.add('has-task');
+                // 藍點：Google 行程
+                if (googleEvents.some(t => t.date === dateStr)) dayEl.classList.add('has-google');
+
+                dayEl.onclick = () => { selectedDate = new Date(year, month, i); renderCalendar(); renderTasks(); };
+                grid.appendChild(dayEl);
+            }
+            document.getElementById('selected-date-display').innerText = `(${formatDate(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate())})`;
+        }
+
+        function changeMonth(dir) { 
+            currentDate.setMonth(currentDate.getMonth() + dir); 
+            renderCalendar(); 
+            if(isAuthorized) fetchGoogleEvents(); // 換月時重新抓資料
+        }
+
+        function formatDate(year, month, day) { return `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`; }
+
+        function renderTasks() {
+            const shortList = document.getElementById('short-task-list');
+            const longList = document.getElementById('long-task-list');
+            shortList.innerHTML = ''; longList.innerHTML = '';
+
+            const selectedDateStr = formatDate(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate());
+            
+            // 將本機短期事項與 Google 短期事項合併顯示
+            let allTasks = [...tasks, ...googleEvents];
+
+            allTasks.forEach(task => {
+                const li = document.createElement('li');
+                li.className = `task-item ${task.completed ? 'completed' : ''}`;
+                
+                let reminderHTML = task.reminderTime ? `<span class="reminder-badge">🔔 ${task.reminderTime}</span>` : '';
+                let googleBadge = task.isGoogle ? `<span class="google-badge">Google</span>` : '';
+                
+                // Google 行程暫不開放打勾功能，因為涉及複雜的 API 更新邏輯
+                let checkboxHTML = task.isGoogle ? '' : `<input type="checkbox" ${task.completed ? 'checked' : ''} onchange="toggleTask(${task.id})">`;
+
+                li.innerHTML = `
+                    <div class="task-content">
+                        ${checkboxHTML}
+                        <span class="task-text">${task.text}</span>
+                        ${reminderHTML}
+                        ${googleBadge}
+                    </div>
+                    <button class="delete-btn" onclick="deleteTask('${task.id}', ${task.isGoogle ? 'true' : 'false'})">刪除</button>
+                `;
+
+                if (task.type === 'short' && task.date === selectedDateStr) {
+                    shortList.appendChild(li);
+                } else if (task.type === 'long') {
+                    longList.appendChild(li);
+                }
+            });
+        }
+
+        renderCalendar();
+        renderTasks();
+    </script>
+</body>
+</html>
